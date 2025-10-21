@@ -7,12 +7,14 @@ import LoadingSpinner from '../../components/LoadingSpinner';
 // As leaflet é uma variável global carregada no index.html
 declare var L: any;
 
+const FIVE_MINUTES = 5 * 60 * 1000;
+
 const AdminTrackingPage: React.FC = () => {
     const [researchers, setResearchers] = useState<Researcher[]>([]);
     const [locations, setLocations] = useState<ResearcherLocation[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [selectedResearcherId, setSelectedResearcherId] = useState<string | null>(null);
-    const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+    const [currentTime, setCurrentTime] = useState(new Date());
     
     const mapRef = useRef<HTMLDivElement>(null);
     const mapInstance = useRef<any>(null);
@@ -22,7 +24,6 @@ const AdminTrackingPage: React.FC = () => {
     useEffect(() => {
         const initMap = () => {
             if (mapRef.current && !mapInstance.current) {
-                // Coordenadas iniciais centralizadas no Brasil
                 mapInstance.current = L.map(mapRef.current).setView([-14.235, -51.925], 4);
                 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -34,7 +35,6 @@ const AdminTrackingPage: React.FC = () => {
         initMap();
     }, []);
     
-    // Efeito para buscar os pesquisadores, roda apenas uma vez
     useEffect(() => {
         const fetchResearchers = async () => {
             try {
@@ -47,40 +47,31 @@ const AdminTrackingPage: React.FC = () => {
         fetchResearchers();
     }, []);
 
-    // Efeito para buscar localizações e configurar o polling
     useEffect(() => {
-        let intervalId: number | undefined;
+        const today = new Date().toISOString().split('T')[0];
 
         const fetchLocations = async () => {
-            setIsLoading(true);
             try {
-                const locationsData = await getLocationsForDate(selectedDate);
+                const locationsData = await getLocationsForDate(today);
                 setLocations(locationsData);
             } catch (error) {
                 console.error("Failed to fetch tracking data:", error);
             } finally {
-                setIsLoading(false);
+                // Garante que o spinner de carregamento seja desativado apenas uma vez
+                if (isLoading) setIsLoading(false);
             }
         };
 
-        fetchLocations();
+        fetchLocations(); // Fetch inicial
 
-        // Configura o polling para atualizações em tempo real apenas se a data selecionada for hoje
-        const today = new Date().toISOString().split('T')[0];
-        if (selectedDate === today) {
-            intervalId = window.setInterval(async () => {
-                const locationsData = await getLocationsForDate(selectedDate);
-                setLocations(locationsData);
-            }, 20000); // Busca novas localizações a cada 20 segundos
-        }
+        const pollIntervalId = window.setInterval(fetchLocations, 20000);
+        const timeUpdateIntervalId = window.setInterval(() => setCurrentTime(new Date()), 60000);
 
-        // Função de limpeza para limpar o intervalo
         return () => {
-            if (intervalId) {
-                clearInterval(intervalId);
-            }
+            clearInterval(pollIntervalId);
+            clearInterval(timeUpdateIntervalId);
         };
-    }, [selectedDate]);
+    }, [isLoading]); // A dependência isLoading garante que o setIsLoading(false) seja chamado corretamente.
     
     const latestLocations = useMemo(() => {
         const latest: Record<string, ResearcherLocation> = {};
@@ -92,6 +83,26 @@ const AdminTrackingPage: React.FC = () => {
         return Object.values(latest);
     }, [locations]);
 
+    const getResearcherStatus = (researcherId: string) => {
+        const lastSeen = latestLocations.find(l => l.researcherId === researcherId);
+        if (!lastSeen) {
+            return { text: 'Offline', color: 'text-gray-400', isOnline: false };
+        }
+        
+        const lastSeenTime = lastSeen.timestamp.getTime();
+        const timeDiff = currentTime.getTime() - lastSeenTime;
+        
+        if (timeDiff < FIVE_MINUTES) {
+            return { text: 'Online', color: 'text-success', isOnline: true };
+        } else {
+            return { text: `Visto às ${lastSeen.timestamp.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`, color: 'text-gray-400', isOnline: false };
+        }
+    };
+    
+    const onlineCount = useMemo(() => {
+      return researchers.filter(r => getResearcherStatus(r.id).isOnline).length;
+    }, [researchers, latestLocations, currentTime]);
+
     useEffect(() => {
         if (!mapInstance.current || !markersLayer.current) return;
         
@@ -102,17 +113,26 @@ const AdminTrackingPage: React.FC = () => {
             latestLocations.forEach(loc => {
                 const researcher = researchers.find(r => r.id === loc.researcherId);
                 if (researcher) {
-                    const marker = L.marker([loc.latitude, loc.longitude])
+                    const status = getResearcherStatus(researcher.id);
+                    const iconHtml = `<div style="background-color: ${status.isOnline ? '#22C55E' : '#6B7280'}; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 5px rgba(0,0,0,0.5);"></div>`;
+                    const customIcon = L.divIcon({
+                      html: iconHtml,
+                      className: 'custom-map-marker',
+                      iconSize: [24, 24],
+                      iconAnchor: [12, 12],
+                    });
+
+                    const marker = L.marker([loc.latitude, loc.longitude], { icon: customIcon })
                         .addTo(markersLayer.current)
-                        .bindPopup(`<b>${researcher.name}</b><br>Última atualização: ${loc.timestamp.toLocaleTimeString('pt-BR')}`);
+                        .bindPopup(`<b>${researcher.name}</b><br>Status: ${status.text}`);
                     markerBounds.push([loc.latitude, loc.longitude]);
                 }
             });
             if(markerBounds.length > 0 && !selectedResearcherId) {
-                mapInstance.current.fitBounds(markerBounds, { padding: [50, 50] });
+                mapInstance.current.fitBounds(markerBounds, { padding: [50, 50], maxZoom: 15 });
             }
         }
-    }, [latestLocations, researchers, selectedResearcherId]);
+    }, [latestLocations, researchers, selectedResearcherId, currentTime]); // Adicionado currentTime para re-renderizar marcadores com status atualizado
     
     useEffect(() => {
         if (!mapInstance.current || !routeLayer.current) return;
@@ -124,7 +144,7 @@ const AdminTrackingPage: React.FC = () => {
             if(researcherRoute.length > 0) {
                 const latLngs = researcherRoute.map(loc => [loc.latitude, loc.longitude]);
                 L.polyline(latLngs, { color: 'blue' }).addTo(routeLayer.current);
-                mapInstance.current.fitBounds(latLngs, { padding: [50, 50] });
+                mapInstance.current.fitBounds(latLngs, { padding: [50, 50], maxZoom: 17 });
             }
         }
     }, [selectedResearcherId, locations]);
@@ -132,28 +152,14 @@ const AdminTrackingPage: React.FC = () => {
     return (
         <div className="flex flex-col h-[calc(100vh-6rem)]">
             <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 mb-6 flex-shrink-0">
-                <h1 className="text-3xl font-bold">Rastreamento de Pesquisadores</h1>
+                <h1 className="text-3xl font-bold">Rastreamento em Tempo Real</h1>
             </div>
 
             <div className="flex-grow flex flex-col md:flex-row gap-4 overflow-hidden">
                 {/* Sidebar */}
                 <aside className="w-full md:w-80 lg:w-96 bg-light-background dark:bg-dark-card p-4 rounded-lg shadow-md flex-shrink-0 flex flex-col">
-                    <h2 className="text-lg font-bold mb-2">Controles</h2>
-                     <div className="mb-4">
-                        <label htmlFor="date-filter" className="block text-sm font-medium mb-1">Data da Rota</label>
-                        <input
-                            type="date"
-                            id="date-filter"
-                            value={selectedDate}
-                            onChange={(e) => {
-                                setSelectedDate(e.target.value);
-                                setSelectedResearcherId(null);
-                            }}
-                            className="w-full input-style"
-                        />
-                    </div>
-                    <h3 className="text-md font-semibold mb-2 border-t border-light-border dark:border-dark-border pt-2">Pesquisadores ({latestLocations.length})</h3>
-                    {isLoading && locations.length === 0 ? (
+                    <h3 className="text-lg font-bold mb-3">Pesquisadores (Online: {onlineCount})</h3>
+                    {isLoading ? (
                         <div className="flex-grow flex items-center justify-center">
                            <LoadingSpinner text="Carregando" />
                         </div>
@@ -162,21 +168,17 @@ const AdminTrackingPage: React.FC = () => {
                            {researchers.length > 0 ? (
                             <ul className="space-y-2">
                                 {researchers.map(researcher => {
-                                    const lastSeen = latestLocations.find(l => l.researcherId === researcher.id);
+                                    const status = getResearcherStatus(researcher.id);
                                     return (
                                         <li key={researcher.id}>
                                             <button 
-                                                onClick={() => setSelectedResearcherId(researcher.id)}
+                                                onClick={() => setSelectedResearcherId(researcher.id === selectedResearcherId ? null : researcher.id)}
                                                 className={`w-full text-left p-2 rounded-md flex items-center gap-3 transition-colors ${selectedResearcherId === researcher.id ? 'bg-light-primary/20' : 'hover:bg-gray-100 dark:hover:bg-dark-background'}`}
                                             >
                                                 <img src={researcher.photoUrl} alt={researcher.name} className="h-10 w-10 rounded-full object-cover flex-shrink-0" />
                                                 <div className="flex-grow min-w-0">
                                                     <p className="font-semibold truncate">{researcher.name}</p>
-                                                    {lastSeen ? (
-                                                        <p className="text-xs text-success">Online - {lastSeen.timestamp.toLocaleTimeString('pt-BR')}</p>
-                                                    ) : (
-                                                        <p className="text-xs text-gray-400">Offline</p>
-                                                    )}
+                                                    <p className={`text-xs font-medium ${status.color}`}>{status.text}</p>
                                                 </div>
                                             </button>
                                         </li>
