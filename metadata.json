@@ -1,0 +1,7 @@
+{
+  "name": "Copy of Copy of idioma - Pesquisa Inteligente Triad3 - ONLINE",
+  "description": "Pesquisa Inteligente Triad3",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
