@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "tslib": "^2.6.3",
     "@supabase/supabase-js": "^2.44.4",
     "recharts": "^3.3.0",
     "react": "^19.2.0",
