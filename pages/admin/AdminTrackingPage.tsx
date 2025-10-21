@@ -34,13 +34,26 @@ const AdminTrackingPage: React.FC = () => {
         initMap();
     }, []);
     
+    // Efeito para buscar os pesquisadores, roda apenas uma vez
     useEffect(() => {
-        const fetchData = async () => {
-            setIsLoading(true);
+        const fetchResearchers = async () => {
             try {
                 const researchersData = await getResearchers();
                 setResearchers(researchersData.filter(r => r.isActive));
-                
+            } catch (error) {
+                console.error("Failed to fetch researchers:", error);
+            }
+        };
+        fetchResearchers();
+    }, []);
+
+    // Efeito para buscar localizações e configurar o polling
+    useEffect(() => {
+        let intervalId: number | undefined;
+
+        const fetchLocations = async () => {
+            setIsLoading(true);
+            try {
                 const locationsData = await getLocationsForDate(selectedDate);
                 setLocations(locationsData);
             } catch (error) {
@@ -49,7 +62,24 @@ const AdminTrackingPage: React.FC = () => {
                 setIsLoading(false);
             }
         };
-        fetchData();
+
+        fetchLocations();
+
+        // Configura o polling para atualizações em tempo real apenas se a data selecionada for hoje
+        const today = new Date().toISOString().split('T')[0];
+        if (selectedDate === today) {
+            intervalId = window.setInterval(async () => {
+                const locationsData = await getLocationsForDate(selectedDate);
+                setLocations(locationsData);
+            }, 20000); // Busca novas localizações a cada 20 segundos
+        }
+
+        // Função de limpeza para limpar o intervalo
+        return () => {
+            if (intervalId) {
+                clearInterval(intervalId);
+            }
+        };
     }, [selectedDate]);
     
     const latestLocations = useMemo(() => {
@@ -123,7 +153,7 @@ const AdminTrackingPage: React.FC = () => {
                         />
                     </div>
                     <h3 className="text-md font-semibold mb-2 border-t border-light-border dark:border-dark-border pt-2">Pesquisadores ({latestLocations.length})</h3>
-                    {isLoading ? (
+                    {isLoading && locations.length === 0 ? (
                         <div className="flex-grow flex items-center justify-center">
                            <LoadingSpinner text="Carregando" />
                         </div>
